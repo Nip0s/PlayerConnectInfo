@@ -30,7 +30,7 @@ namespace PlayerConnectInfo;
 public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConfig>
 {
     public override string ModuleName => "PlayerConnectInfo";
-    public override string ModuleVersion => "1.6.0";
+    public override string ModuleVersion => "1.6.1";
     public override string ModuleAuthor => "Nip0s";
     public override string ModuleDescription => "Сообщения о заходе/выходе, устойчивые к переподключениям MultiAddonManager";
 
@@ -166,14 +166,43 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         }), TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    /// <summary>Первый выбор команды в меню админ не делает — вместо него хайд.</summary>
+    /// <summary>
+    /// Первый выбор в меню после захода. «Наблюдатели» — переход пропускаем (иначе
+    /// меню не закроется и через секунду снова потребует команду), а следом молча
+    /// прячем, как !hide из наблюдателей. T/CT — обычная игра, хайда нет.
+    /// </summary>
     private HookResult OnJoinTeam(CCSPlayerController? player, CommandInfo command)
     {
         if (player is not { IsValid: true } || !_pendingHide.Remove(player.SteamID))
             return HookResult.Continue;
-        Debug($"{player.PlayerName}: первый выбор команды — вместо него хайд");
-        AutoHide(player, player.SteamID);
-        return HookResult.Handled;
+        if (!int.TryParse(command.GetArg(1), out var team) || team != (int)CsTeam.Spectator)
+            return HookResult.Continue;
+
+        var steamId = player.SteamID;
+        var admin = ServerAdmin(steamId);
+        if (_iks == null || admin == null || _iks.HidenAdmins.Contains(admin))
+            return HookResult.Continue;
+
+        Debug($"{player.PlayerName}: зашёл в наблюдатели — прячем");
+        _hiding.Add(steamId); // переход в наблюдатели тоже не объявляем
+        Server.ExecuteCommand("sv_disable_teamselect_menu 1");
+        AddTimer(0.5f, () => Server.NextWorldUpdate(() =>
+        {
+            if (player.IsValid) player.ChangeTeam(CsTeam.None);
+        }), TimerFlags.STOP_ON_MAPCHANGE);
+        AddTimer(0.8f, () =>
+        {
+            if (player.IsValid && _iks != null && !_iks.HidenAdmins.Contains(admin))
+                _iks.HidenAdmins.Add(admin);
+        }, TimerFlags.STOP_ON_MAPCHANGE);
+        // Меню держим выключенным дольше, чем !hide: после перехода в «не назначен»
+        // клиент норовит открыть его заново.
+        AddTimer(4.0f, () => Server.NextWorldUpdate(() =>
+        {
+            _hiding.Remove(steamId);
+            Server.ExecuteCommand("sv_disable_teamselect_menu 0");
+        }), TimerFlags.STOP_ON_MAPCHANGE);
+        return HookResult.Continue;
     }
 
     private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
@@ -190,18 +219,10 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
             return HookResult.Continue;
         }
 
-        // Сервер сам поставил админа в команду (таймер выбора, автобаланс) —
-        // молча и сразу обратно в хайд.
-        if (@event.Team != (int)CsTeam.None && _pendingHide.Remove(player.SteamID))
-        {
-            @event.Silent = true;
-            info.DontBroadcast = true;
-            var steamId = player.SteamID;
-            Server.NextFrame(() =>
-            {
-                if (player.IsValid) AutoHide(player, steamId);
-            });
-        }
+        // Сервер сам поставил админа в T/CT (таймер выбора, автобаланс) — значит
+        // он играет, хайд по первому выбору больше не ждём.
+        if (@event.Team is (int)CsTeam.Terrorist or (int)CsTeam.CounterTerrorist)
+            _pendingHide.Remove(player.SteamID);
         return HookResult.Continue;
     }
 
