@@ -30,7 +30,7 @@ namespace PlayerConnectInfo;
 public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConfig>
 {
     public override string ModuleName => "PlayerConnectInfo";
-    public override string ModuleVersion => "1.6.2";
+    public override string ModuleVersion => "1.6.3";
     public override string ModuleAuthor => "Nip0s";
     public override string ModuleDescription => "Сообщения о заходе/выходе, устойчивые к переподключениям MultiAddonManager";
 
@@ -186,15 +186,20 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         Debug($"{player.PlayerName}: зашёл в наблюдатели — прячем");
         _hiding.Add(steamId); // переход в наблюдатели тоже не объявляем
         Server.ExecuteCommand("sv_disable_teamselect_menu 1");
-        AddTimer(0.5f, () => Server.NextWorldUpdate(() =>
+        // Сразу следующим кадром: за полсекунды в наблюдателях сервер успевал
+        // добрать ботов, а сам админ видел себя в табе.
+        Server.NextWorldUpdate(() =>
         {
-            if (player.IsValid) player.ChangeTeam(CsTeam.None);
-        }), TimerFlags.STOP_ON_MAPCHANGE);
-        AddTimer(0.8f, () =>
-        {
-            if (player.IsValid && _iks != null && !_iks.HidenAdmins.Contains(admin))
-                _iks.HidenAdmins.Add(admin);
-        }, TimerFlags.STOP_ON_MAPCHANGE);
+            if (!player.IsValid) return;
+            player.ChangeTeam(CsTeam.None);
+            // В список скрытых — уже после перехода: иначе IksAdmin на него пишет
+            // всем фейковое «Игрок отключился».
+            Server.NextFrame(() =>
+            {
+                if (player.IsValid && _iks != null && !_iks.HidenAdmins.Contains(admin))
+                    _iks.HidenAdmins.Add(admin);
+            });
+        });
         // Меню держим выключенным дольше, чем !hide: после перехода в «не назначен»
         // клиент норовит открыть его заново.
         AddTimer(4.0f, () => Server.NextWorldUpdate(() =>
