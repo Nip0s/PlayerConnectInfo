@@ -2,6 +2,7 @@ using System.Text;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Capabilities;
+using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
@@ -29,7 +30,7 @@ namespace PlayerConnectInfo;
 public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConfig>
 {
     public override string ModuleName => "PlayerConnectInfo";
-    public override string ModuleVersion => "1.5.0";
+    public override string ModuleVersion => "1.6.0";
     public override string ModuleAuthor => "Nip0s";
     public override string ModuleDescription => "Сообщения о заходе/выходе, устойчивые к переподключениям MultiAddonManager";
 
@@ -61,6 +62,14 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
 
     /// <summary>Админы посреди автохайда: их смена команды не объявляется в чате.</summary>
     private readonly HashSet<ulong> _hiding = new();
+
+    /// <summary>
+    /// Админы, которые зашли и ещё не выбрали команду. Меню выбора команды
+    /// открывается, когда клиент догрузился, и закрыть его без выбора нельзя.
+    /// Поэтому прячем не сразу, а по первому выбору: переход блокируем и
+    /// вместо него скрываем.
+    /// </summary>
+    private readonly HashSet<ulong> _pendingHide = new();
     private Timer? _cleanupTimer;
 
     /// <summary>
@@ -93,6 +102,7 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         RegisterEventHandler<EventPlayerConnectFull>(OnPlayerConnectFull, HookMode.Post);
         RegisterEventHandler<EventPlayerDisconnect>(OnPlayerDisconnect);
         RegisterEventHandler<EventPlayerTeam>(OnPlayerTeam, HookMode.Pre);
+        AddCommandListener("jointeam", OnJoinTeam, HookMode.Pre);
 
         StartCleanupTimer();
         // STOP_ON_MAPCHANGE гасит таймер при смене карты — поднимаем заново.
@@ -156,14 +166,41 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         }), TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    /// <summary>«X переходит в наблюдатели» во время автохайда выдало бы админа.</summary>
+    /// <summary>Первый выбор команды в меню админ не делает — вместо него хайд.</summary>
+    private HookResult OnJoinTeam(CCSPlayerController? player, CommandInfo command)
+    {
+        if (player is not { IsValid: true } || !_pendingHide.Remove(player.SteamID))
+            return HookResult.Continue;
+        Debug($"{player.PlayerName}: первый выбор команды — вместо него хайд");
+        AutoHide(player, player.SteamID);
+        return HookResult.Handled;
+    }
+
     private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
     {
         var player = @event.Userid;
-        if (player is { IsValid: true } && _hiding.Contains(player.SteamID))
+        if (player is not { IsValid: true })
+            return HookResult.Continue;
+
+        // «X переходит в наблюдатели» во время автохайда выдало бы админа.
+        if (_hiding.Contains(player.SteamID))
         {
             @event.Silent = true;
             info.DontBroadcast = true;
+            return HookResult.Continue;
+        }
+
+        // Сервер сам поставил админа в команду (таймер выбора, автобаланс) —
+        // молча и сразу обратно в хайд.
+        if (@event.Team != (int)CsTeam.None && _pendingHide.Remove(player.SteamID))
+        {
+            @event.Silent = true;
+            info.DontBroadcast = true;
+            var steamId = player.SteamID;
+            Server.NextFrame(() =>
+            {
+                if (player.IsValid) AutoHide(player, steamId);
+            });
         }
         return HookResult.Continue;
     }
@@ -281,8 +318,8 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         if (Config.ShowConnect && !t.Silent)
             Server.PrintToChatAll(L("Connected", t.Name));
 
-        if (Config.AutoHideAdmins)
-            AutoHide(player, steamId);
+        if (Config.AutoHideAdmins && ServerAdmin(steamId) != null)
+            _pendingHide.Add(steamId);
 
         return HookResult.Continue;
     }
@@ -301,6 +338,8 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         if (steamId == 0) return HookResult.Continue;
 
         int reason = @event.Reason;
+        if (!Config.ReconnectReasons.Contains(reason))
+            _pendingHide.Remove(steamId);
 
         // Цикл докачки аддонов в MultiAddonManager — не настоящий уход.
         if (Config.ReconnectReasons.Contains(reason))
