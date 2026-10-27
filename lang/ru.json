@@ -1,0 +1,5 @@
+{
+  "Connecting" : " {Orange}●{Default} {LightBlue}{0}{Default} подключается к серверу",
+  "Connected" : " {Green}●{Default} {LightBlue}{0}{Default} подключился к серверу",
+  "Disconnect" : " {Red}●{Default} {LightBlue}{0}{Default} отключился от сервера"
+}
