@@ -30,7 +30,7 @@ namespace PlayerConnectInfo;
 public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConfig>
 {
     public override string ModuleName => "PlayerConnectInfo";
-    public override string ModuleVersion => "1.6.1";
+    public override string ModuleVersion => "1.6.2";
     public override string ModuleAuthor => "Nip0s";
     public override string ModuleDescription => "Сообщения о заходе/выходе, устойчивые к переподключениям MultiAddonManager";
 
@@ -331,6 +331,11 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         t.LastSeen = DateTime.UtcNow;
         t.Silent = IsSilent(steamId);
 
+        // Хайд по первому выбору — на КАЖДЫЙ заход. Сообщения о реконнекте глушатся
+        // (игрок «не уходил»), но меню выбора команды клиент показывает заново.
+        if (Config.AutoHideAdmins && ServerAdmin(steamId) != null)
+            _pendingHide.Add(steamId);
+
         if (t.AnnouncedJoined) return HookResult.Continue;
         t.AnnouncedJoined = true;
 
@@ -339,8 +344,7 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         if (Config.ShowConnect && !t.Silent)
             Server.PrintToChatAll(L("Connected", t.Name));
 
-        if (Config.AutoHideAdmins && ServerAdmin(steamId) != null)
-            _pendingHide.Add(steamId);
+
 
         return HookResult.Continue;
     }
