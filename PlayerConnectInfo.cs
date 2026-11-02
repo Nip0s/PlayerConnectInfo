@@ -31,7 +31,7 @@ namespace PlayerConnectInfo;
 public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConfig>
 {
     public override string ModuleName => "PlayerConnectInfo";
-    public override string ModuleVersion => "1.6.4";
+    public override string ModuleVersion => "1.6.5";
     public override string ModuleAuthor => "Nip0s";
     public override string ModuleDescription => "Сообщения о заходе/выходе, устойчивые к переподключениям MultiAddonManager";
 
@@ -110,7 +110,6 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         RegisterListener<Listeners.OnMapStart>(_ =>
         {
             StartCleanupTimer();
-            ReleaseBots(); // таймер возврата квоты гаснет вместе с картой
         });
 
         Console.WriteLine($"[{ModuleName}] Загружен v{ModuleVersion}");
@@ -191,7 +190,6 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         Debug($"{player.PlayerName}: зашёл в наблюдатели — прячем");
         _hiding.Add(steamId); // переход в наблюдатели тоже не объявляем
         Server.ExecuteCommand("sv_disable_teamselect_menu 1");
-        HoldBotsIfEmpty(player);
 
         // Полсекунды в наблюдателях нужны клиенту: увидев себя там, он закрывает
         // меню выбора команды. При мгновенном возврате меню остаётся висеть.
@@ -217,35 +215,9 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
         return HookResult.Continue;
     }
 
-    private int? _heldBotQuota;
-
-    /// <summary>
-    /// На пустом сервере боты заходят, как только появился человек — хоть в
-    /// наблюдателях. На время хайда держим квоту в нуле. Если люди уже играют,
-    /// не трогаем: боты и так на месте, а нулевая квота их бы выкинула.
-    /// </summary>
-    private void HoldBotsIfEmpty(CCSPlayerController admin)
-    {
-        bool othersPlaying = Utilities.GetPlayers().Any(p =>
-            p is { IsValid: true, IsBot: false, IsHLTV: false } && p.Slot != admin.Slot
-            && p.TeamNum is (int)CsTeam.Terrorist or (int)CsTeam.CounterTerrorist);
-        if (othersPlaying || _heldBotQuota != null) return;
-
-        var quota = ConVar.Find("bot_quota");
-        if (quota == null) return;
-        _heldBotQuota = quota.GetPrimitiveValue<int>();
-        if (_heldBotQuota == 0) { _heldBotQuota = null; return; }
-
-        Server.ExecuteCommand("bot_quota 0");
-        AddTimer(1.5f, ReleaseBots, TimerFlags.STOP_ON_MAPCHANGE);
-    }
-
-    private void ReleaseBots()
-    {
-        if (_heldBotQuota is not int value) return;
-        _heldBotQuota = null;
-        Server.ExecuteCommand($"bot_quota {value}");
-    }
+    // Квоту ботов при хайде больше не трогаем. «bot_quota 0» на полторы секунды выкидывал
+    // вместе с ботами и SourceTV (баг CS2 при уменьшении квоты) — запись демки для клипов
+    // обрывалась до конца карты (02.11.2026). Ботами теперь распоряжается NiposMoments (BotFill).
 
     private HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
     {
@@ -272,7 +244,6 @@ public class PlayerConnectInfo : BasePlugin, IPluginConfig<PlayerConnectInfoConf
     {
         _cleanupTimer?.Kill();
         _cleanupTimer = null;
-        ReleaseBots();
 
         foreach (var t in _tracked.Values)
             t.PendingLeave?.Kill();
